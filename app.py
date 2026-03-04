@@ -74,7 +74,6 @@ def find_file_best(pattern: str) -> str | None:
             score = 40
 
         if score >= 0:
-            # desempate: archivos más “específicos” tienden a ser más largos
             score += min(len(base_c), 30) / 100.0
             scored.append((score, path))
 
@@ -88,24 +87,17 @@ def read_csv_robust(path: str) -> pd.DataFrame:
     """
     Lee CSV intentando inferir separador si hace falta.
     """
-    # Primero intento estándar
     try:
         df = pd.read_csv(path)
-        # Si queda 1 sola columna y hay ';' en el header, es separador equivocado
         if df.shape[1] == 1 and ";" in str(df.columns[0]):
             df = pd.read_csv(path, sep=";")
         return df
     except Exception:
-        # fallback: inferencia de separador
         return pd.read_csv(path, sep=None, engine="python")
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.lower()
-    )
+    df.columns = df.columns.astype(str).str.strip().str.lower()
     return df
 
 def coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -120,11 +112,8 @@ def coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 # ------------------------------------------------------------
 @st.cache_data
 def load_all_data():
-    # VD curves (DV vs densidad por severidad)
     vd_curves = {"FLEXIBLE": {}, "RIGIDO": {}}
 
-    # Map de "clave interna" -> "suffix de archivo"
-    # OJO: aquí los sufijos son los de tus CSV (sin 'vd_flexible_' / 'vd_rigido_')
     mapping = {
         "FLEXIBLE": {
             "piel_cocodrilo": "piel_cocodrilo",
@@ -152,29 +141,23 @@ def load_all_data():
         },
     }
 
-    # Cargar VD con patrón estricto: vd_{tipo}_{suffix}.csv
+    # VD: vd_{tipo}_{suffix}.csv
     for p_type, damages in mapping.items():
         prefix = "vd_flexible_" if p_type == "FLEXIBLE" else "vd_rigido_"
         for key, suffix in damages.items():
             path = find_file_best(prefix + suffix)
             if path:
                 df = read_csv_robust(path)
-                # VD: columnas esperadas: Densidad,Baja,Media,Alta
-                # normalizamos para tolerar variaciones
-                df = standardize_columns(df)
-                # renombrar si vinieran como "densidad" etc.
-                # (en tu ejemplo ya son correctas)
+                df = standardize_columns(df)  # densidad/baja/media/alta
                 vd_curves[p_type][key] = df
 
-    # Cargar CDV (corrección): archivos específicos
-    # IMPORTANTÍSIMO: NO usar "Flexible" / "rigido" porque colisiona con vd_*.csv
+    # CDV (corrección) - archivos específicos para evitar colisiones con vd_*.csv
     cflex_path = find_file_best("correccion_flexible")
     crig_path  = find_file_best("correccion_rigido")
 
     c_flex = read_csv_robust(cflex_path) if cflex_path else None
     c_rig  = read_csv_robust(crig_path)  if crig_path else None
 
-    # Normalizar CDV
     if c_flex is not None:
         c_flex = standardize_columns(c_flex)
         c_flex = coerce_numeric(c_flex, ["q", "tdv", "cdv"])
@@ -194,12 +177,8 @@ def get_dv(p_type: str, key: str, sev: str, density: float) -> float:
     if key not in VD_CURVES.get(p_type, {}):
         return 0.0
 
-    df = VD_CURVES[p_type][key].copy()
-    # Normalizar columnas mínimas
-    df = standardize_columns(df)
+    df = standardize_columns(VD_CURVES[p_type][key])
 
-    # Columnas esperadas (en minúscula)
-    # densidad, baja, media, alta
     if "densidad" not in df.columns:
         return 0.0
 
@@ -221,6 +200,7 @@ def get_dv(p_type: str, key: str, sev: str, density: float) -> float:
 def get_cdv(p_type: str, q: int, tdv: float) -> float:
     df = CDV_FLEX if p_type == "FLEXIBLE" else CDV_RIG
 
+    # Regla ASTM/tu MATLAB: si q <= 1 => CDV = TDV
     if df is None or q <= 1:
         return float(tdv)
 
@@ -257,7 +237,7 @@ def get_cdv(p_type: str, q: int, tdv: float) -> float:
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
-st.title("🚜 GEO_PCI - Sistema de Evaluación")
+st.title("🚜 GEO_PCI - Sistema de Evaluación (Manual)")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -268,7 +248,6 @@ with st.sidebar:
         st.session_state.list_danos = []
         st.rerun()
 
-    # Debug opcional
     if st.checkbox("Debug (CDV/VD)"):
         st.write("Archivos CSV detectados:")
         st.write([os.path.basename(p) for p in list_csv_files()])
@@ -283,7 +262,7 @@ with st.sidebar:
 col_in, col_out = st.columns([1, 1.5])
 
 with col_in:
-    st.subheader("📝 Nuevo Deterioro")
+    st.subheader("📝 Nuevo Deterioro (evento manual)")
     with st.form("form_danos", clear_on_submit=True):
         opciones = list(VD_CURVES[pav_type].keys())
         tipo = st.selectbox(
@@ -310,62 +289,69 @@ with col_out:
         dvs_finales = []
         danos_filtrados = [d for d in st.session_state.list_danos if d["Pav"] == pav_type]
 
+        # 1) DV por evento manual (se asume que el usuario ya ingresa "cantidad total" del evento)
         for d in danos_filtrados:
             if pav_type == "FLEXIBLE":
                 dens = (d["Cantidad"] / area_total) * 100.0
                 if d["Deterioro"] in ["ahuellamiento", "abultamientos_hundimientos"]:
                     dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
             else:
-                # densidad en rígido por # losas equivalentes
                 dens = (d["Cantidad"] / (area_total / P["LOSA_AREA_M2"])) * 100.0
 
             val_dv = get_dv(pav_type, d["Deterioro"], d["Severidad"], dens)
             dvs_finales.append(val_dv)
 
-        if dvs_finales:
-            current_vals = sorted([v for v in dvs_finales if v > 0], reverse=True)
-            if not current_vals:
-                st.warning("Todos los DV resultaron 0. Verifica archivos VD y rangos.")
-            else:
-                hdv = current_vals[0]
-                m = 1 + (9 / 98) * (100 - hdv)
+        # 2) ASTM: HDV -> m -> iteración CDV
+        current_vals = sorted([v for v in dvs_finales if v > 0], reverse=True)
 
-                vals_iter = current_vals[: int(np.ceil(m))]
-                max_cdv = 0.0
+        if not current_vals:
+            st.warning("Todos los DV resultaron 0. Verifica archivos VD y rangos.")
+        else:
+            hdv = current_vals[0]
 
-                while True:
-                    q = sum(1 for v in vals_iter if v > 2.0)
-                    tdv = float(np.sum(vals_iter))
-                    cdv = get_cdv(pav_type, q, tdv)
-                    max_cdv = max(max_cdv, cdv)
+            # m acotado como en tu MATLAB
+            m = 1 + (9 / 98) * (100 - hdv)
+            m = min(max(m, 1.0), 10.0)
 
-                    if q <= 1:
-                        break
+            vals_iter = current_vals[: int(np.ceil(m))]
+            max_cdv = 0.0
 
-                    idx_gt2 = [i for i, v in enumerate(vals_iter) if v > 2.0]
-                    if not idx_gt2:
-                        break
-                    vals_iter[idx_gt2[-1]] = 2.0
+            while True:
+                q = sum(1 for v in vals_iter if v > 2.0)
+                tdv = float(np.sum(vals_iter))
+                cdv = get_cdv(pav_type, q, tdv)
+                max_cdv = max(max_cdv, cdv)
 
-                pci = max(0.0, 100.0 - max_cdv)
+                if q <= 1:
+                    break
 
-                c1, c2 = st.columns(2)
-                c1.metric("PCI", f"{round(pci, 1)}")
+                # bajar a 2.0 el MENOR DV>2 (igual a MATLAB)
+                idx_gt2 = [i for i, v in enumerate(vals_iter) if v > 2.0]
+                if not idx_gt2:
+                    break
+                i_min = min(idx_gt2, key=lambda i: vals_iter[i])
+                vals_iter[i_min] = 2.0
 
-                rating = (
-                    "Excelente" if pci > 85 else
-                    "Muy Bueno" if pci > 70 else
-                    "Bueno" if pci > 55 else
-                    "Regular" if pci > 40 else
-                    "Malo" if pci > 25 else
-                    "Muy Malo" if pci > 10 else
-                    "Fallado"
-                )
-                c2.metric("Condición", rating)
+            pci = max(0.0, 100.0 - max_cdv)
 
-                st.markdown("---")
-                df_mostrar = pd.DataFrame(danos_filtrados)
-                df_mostrar["Deducido"] = [round(v, 2) for v in dvs_finales]
-                st.table(df_mostrar[["Deterioro", "Severidad", "Cantidad", "Deducido"]])
+            # 3) Mostrar
+            c1, c2 = st.columns(2)
+            c1.metric("PCI", f"{round(pci, 1)}")
+
+            rating = (
+                "BUENO" if pci > 85 else
+                "SATISFACTORIO" if pci > 70 else
+                "REGULAR" if pci > 55 else
+                "MALO" if pci > 40 else
+                "MUY MALO" if pci > 25 else
+                "CRITICO" if pci > 10 else
+                "FALLADO"
+            )
+            c2.metric("Condición", rating)
+
+            st.markdown("---")
+            df_mostrar = pd.DataFrame(danos_filtrados)
+            df_mostrar["Deducido"] = [round(v, 2) for v in dvs_finales]
+            st.table(df_mostrar[["Deterioro", "Severidad", "Cantidad", "Deducido"]])
     else:
         st.info("Agregue deterioros para ver el cálculo.")
