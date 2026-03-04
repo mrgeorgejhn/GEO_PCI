@@ -133,7 +133,7 @@ with col_in:
         opciones = list(VD_CURVES[pav_type].keys())
         tipo = st.selectbox("Tipo de Deterioro", options=opciones if opciones else ["No se encontraron datos"])
         sev = st.select_slider("Severidad", options=["Baja", "Media", "Alta"], value="Media")
-        cant = st.number_input("Cantidad (m, m² o losas)", min_value=0.0, step=0.1)
+        cant = st.number_input("Cantidad (m, m²)", min_value=0.0, step=0.1)
         
         submitted = st.form_submit_button("Añadir a la lista")
         if submitted and tipo != "No se encontraron datos":
