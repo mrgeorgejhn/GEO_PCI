@@ -279,34 +279,56 @@ with st.sidebar:
 
 col_in, col_out = st.columns([1, 1.5])
 
+# ------------------------------------------------------------
+# INPUT PANEL (FIX: selectbox fuera del form)
+# ------------------------------------------------------------
 with col_in:
     st.subheader("📝 Nuevo Deterioro (evento manual)")
-    with st.form("form_danos", clear_on_submit=True):
-        opciones = list(VD_CURVES[pav_type].keys())
-        tipo = st.selectbox(
-            "Tipo de Deterioro",
-            options=opciones if opciones else ["Error: Datos no encontrados"]
-        )
-        sev = st.select_slider("Severidad", options=["Baja", "Media", "Alta"], value="Media")
 
-        # ------------------------------------------------------------
-        # INPUTS CONDICIONALES:
-        #  - Si es baches (FLEXIBLE): NO mostrar "Cantidad", mostrar Largo y Área
-        #  - En otro caso: mostrar "Cantidad"
-        # ------------------------------------------------------------
+    opciones = list(VD_CURVES[pav_type].keys())
+    tipo = st.selectbox(
+        "Tipo de Deterioro",
+        options=opciones if opciones else ["Error: Datos no encontrados"],
+        key="tipo_deterioro_sel",
+    )
+    sev = st.select_slider(
+        "Severidad",
+        options=["Baja", "Media", "Alta"],
+        value="Media",
+        key="sev_sel",
+    )
+
+    with st.form("form_danos", clear_on_submit=True):
         cant = 0.0
         largo_bache = 0.0
         area_bache_m2 = 0.0
 
-        if pav_type == "FLEXIBLE" and tipo == "baches":
+        if pav_type == "FLEXIBLE" and str(tipo).strip().lower() == "baches":
             st.caption("Regla baches: si largo > 0.75 m ⇒ huecos_equiv = area/0.45; si no ⇒ 1 hueco.")
-            largo_bache = st.number_input("Largo del bache (m)", min_value=0.0, step=0.01, value=0.0)
-            area_bache_m2 = st.number_input("Área del bache (m²)", min_value=0.0, step=0.01, value=0.0)
+            largo_bache = st.number_input(
+                "Largo del bache (m)",
+                min_value=0.0,
+                step=0.01,
+                value=0.0,
+                key="largo_bache_in",
+            )
+            area_bache_m2 = st.number_input(
+                "Área del bache (m²)",
+                min_value=0.0,
+                step=0.01,
+                value=0.0,
+                key="area_bache_in",
+            )
         else:
-            cant = st.number_input("Cantidad", min_value=0.0, step=0.1)
+            cant = st.number_input(
+                "Cantidad",
+                min_value=0.0,
+                step=0.1,
+                key="cant_in",
+            )
 
         if st.form_submit_button("Añadir a la lista"):
-            if opciones:
+            if opciones and "Error: Datos no encontrados" not in opciones:
                 st.session_state.list_danos.append({
                     "Deterioro": tipo,
                     "Severidad": sev,
@@ -317,6 +339,9 @@ with col_in:
                 })
                 st.rerun()
 
+# ------------------------------------------------------------
+# OUTPUT PANEL
+# ------------------------------------------------------------
 with col_out:
     st.subheader("📊 Resultados")
 
@@ -341,7 +366,7 @@ with col_out:
                         dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
 
             else:
-                # RÍGIDO: cantidad contra losas equivalentes (como ya lo tenías)
+                # RÍGIDO: cantidad contra losas equivalentes
                 dens = (float(d["Cantidad"]) / (area_total / P["LOSA_AREA_M2"])) * 100.0
 
             densidades.append(float(dens))
