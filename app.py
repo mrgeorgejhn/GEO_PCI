@@ -58,7 +58,7 @@ def find_file_best(pattern: str) -> str | None:
     if not candidates:
         return None
 
-    scored = []
+    scored: list[tuple[float, str]] = []
     for path in candidates:
         fname = os.path.basename(path)
         base = os.path.splitext(fname)[0]
@@ -75,7 +75,7 @@ def find_file_best(pattern: str) -> str | None:
 
         if score >= 0:
             score += min(len(base_c), 30) / 100.0
-            scored.append((score, path))
+            scored.append((float(score), path))
 
     if not scored:
         return None
@@ -234,6 +234,24 @@ def get_cdv(p_type: str, q: int, tdv: float) -> float:
     )
     return float(f(tdv))
 
+def baches_qty_equiv(largo_m: float, area_m2: float) -> float:
+    """
+    Replica EXACTO la regla de tu MATLAB para baches:
+      - si largo > 0.75 m => qty = area/0.45 (huecos equivalentes)
+      - si no => qty = 1 (un hueco)
+    Aquí, por seguridad, si no se ingresó nada (largo=0 y area=0), qty=0.
+    """
+    largo_m = float(largo_m or 0.0)
+    area_m2 = float(area_m2 or 0.0)
+
+    if largo_m <= 0.0 and area_m2 <= 0.0:
+        return 0.0
+
+    if largo_m > P["HUECO_UMBRAL_LARGO"]:
+        return max(0.0, area_m2) / P["HUECO_AREA_EQ"]
+
+    return 1.0
+
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
@@ -270,14 +288,26 @@ with col_in:
             options=opciones if opciones else ["Error: Datos no encontrados"]
         )
         sev = st.select_slider("Severidad", options=["Baja", "Media", "Alta"], value="Media")
+
+        # Input base para eventos manuales
         cant = st.number_input("Cantidad", min_value=0.0, step=0.1)
+
+        # Inputs específicos para baches (replica tu MATLAB)
+        largo_bache = 0.0
+        area_bache_m2 = 0.0
+        if pav_type == "FLEXIBLE" and tipo == "baches":
+            st.caption("Regla baches: si largo > 0.75 m ⇒ huecos_equiv = area/0.45; si no ⇒ 1 hueco.")
+            largo_bache = st.number_input("Largo del bache (m)", min_value=0.0, step=0.01, value=0.0)
+            area_bache_m2 = st.number_input("Área del bache (m²)", min_value=0.0, step=0.01, value=0.0)
 
         if st.form_submit_button("Añadir a la lista"):
             if opciones:
                 st.session_state.list_danos.append({
                     "Deterioro": tipo,
                     "Severidad": sev,
-                    "Cantidad": cant,
+                    "Cantidad": float(cant),
+                    "Largo_m": float(largo_bache),
+                    "Area_m2": float(area_bache_m2),
                     "Pav": pav_type
                 })
                 st.rerun()
@@ -286,20 +316,32 @@ with col_out:
     st.subheader("📊 Resultados")
 
     if st.session_state.list_danos:
-        dvs_finales = []
+        dvs_finales: list[float] = []
+        densidades: list[float] = []
+
         danos_filtrados = [d for d in st.session_state.list_danos if d["Pav"] == pav_type]
 
-        # 1) DV por evento manual (se asume que el usuario ya ingresa "cantidad total" del evento)
+        # 1) DV por evento manual (reglas de densidad alineadas con tu MATLAB en baches)
         for d in danos_filtrados:
             if pav_type == "FLEXIBLE":
-                dens = (d["Cantidad"] / area_total) * 100.0
-                if d["Deterioro"] in ["ahuellamiento", "abultamientos_hundimientos"]:
-                    dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
-            else:
-                dens = (d["Cantidad"] / (area_total / P["LOSA_AREA_M2"])) * 100.0
+                # --- BACHES: convertir a huecos equivalentes (area/0.45) o 1 hueco
+                if d["Deterioro"] == "baches":
+                    qty_equiv = baches_qty_equiv(d.get("Largo_m", 0.0), d.get("Area_m2", 0.0))
+                    dens = (qty_equiv / area_total) * 100.0
 
-            val_dv = get_dv(pav_type, d["Deterioro"], d["Severidad"], dens)
-            dvs_finales.append(val_dv)
+                # --- RESTO (mantienes tu entrada manual como cantidad directa)
+                else:
+                    dens = (float(d["Cantidad"]) / area_total) * 100.0
+                    if d["Deterioro"] in ["ahuellamiento", "abultamientos_hundimientos"]:
+                        dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
+
+            else:
+                # RÍGIDO: cantidad contra losas equivalentes (como ya lo tenías)
+                dens = (float(d["Cantidad"]) / (area_total / P["LOSA_AREA_M2"])) * 100.0
+
+            densidades.append(float(dens))
+            val_dv = get_dv(pav_type, d["Deterioro"], d["Severidad"], float(dens))
+            dvs_finales.append(float(val_dv))
 
         # 2) ASTM: HDV -> m -> iteración CDV
         current_vals = sorted([v for v in dvs_finales if v > 0], reverse=True)
@@ -351,7 +393,20 @@ with col_out:
 
             st.markdown("---")
             df_mostrar = pd.DataFrame(danos_filtrados)
+
+            # Columna opcional: cantidad equivalente (para auditar baches)
+            def _qty_equiv_row(row: pd.Series) -> float:
+                if pav_type == "FLEXIBLE" and str(row.get("Deterioro", "")) == "baches":
+                    return baches_qty_equiv(row.get("Largo_m", 0.0), row.get("Area_m2", 0.0))
+                return float(row.get("Cantidad", 0.0) or 0.0)
+
+            df_mostrar["Cantidad_equiv"] = df_mostrar.apply(_qty_equiv_row, axis=1)
+            df_mostrar["Densidad_%"] = [round(x, 3) for x in densidades]
             df_mostrar["Deducido"] = [round(v, 2) for v in dvs_finales]
-            st.table(df_mostrar[["Deterioro", "Severidad", "Cantidad", "Deducido"]])
+
+            # Tabla final
+            cols_show = ["Deterioro", "Severidad", "Cantidad", "Cantidad_equiv", "Densidad_%", "Deducido"]
+            st.table(df_mostrar[cols_show])
+
     else:
         st.info("Agregue deterioros para ver el cálculo.")
