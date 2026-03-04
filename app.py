@@ -289,16 +289,21 @@ with col_in:
         )
         sev = st.select_slider("Severidad", options=["Baja", "Media", "Alta"], value="Media")
 
-        # Input base para eventos manuales
-        cant = st.number_input("Cantidad", min_value=0.0, step=0.1)
-
-        # Inputs específicos para baches (replica tu MATLAB)
+        # ------------------------------------------------------------
+        # INPUTS CONDICIONALES:
+        #  - Si es baches (FLEXIBLE): NO mostrar "Cantidad", mostrar Largo y Área
+        #  - En otro caso: mostrar "Cantidad"
+        # ------------------------------------------------------------
+        cant = 0.0
         largo_bache = 0.0
         area_bache_m2 = 0.0
+
         if pav_type == "FLEXIBLE" and tipo == "baches":
             st.caption("Regla baches: si largo > 0.75 m ⇒ huecos_equiv = area/0.45; si no ⇒ 1 hueco.")
             largo_bache = st.number_input("Largo del bache (m)", min_value=0.0, step=0.01, value=0.0)
             area_bache_m2 = st.number_input("Área del bache (m²)", min_value=0.0, step=0.01, value=0.0)
+        else:
+            cant = st.number_input("Cantidad", min_value=0.0, step=0.1)
 
         if st.form_submit_button("Añadir a la lista"):
             if opciones:
