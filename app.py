@@ -1,4 +1,5 @@
 import os
+import math
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,7 +18,7 @@ P = {
     "HUECO_AREA_EQ": 0.45,
     "HUECO_UMBRAL_LARGO": 0.75,
     "LOSA_AREA_M2": 18.0,
-    "CAP_DENS_AHUELL_PCT": 31.0
+    "CAP_DENS_AHUELL_PCT": 31.0,
 }
 
 DATA_DIR = "data"
@@ -47,12 +48,6 @@ def list_csv_files() -> list[str]:
         return []
 
 def find_file_best(pattern: str) -> str | None:
-    """
-    Devuelve el mejor match para `pattern` dentro de la carpeta data (o .).
-    Prioriza:
-      1) match exacto por nombre (sin extensión)
-      2) match por 'contains'
-    """
     pat = _clean_name(pattern)
     candidates = list_csv_files()
     if not candidates:
@@ -84,9 +79,6 @@ def find_file_best(pattern: str) -> str | None:
     return scored[0][1]
 
 def read_csv_robust(path: str) -> pd.DataFrame:
-    """
-    Lee CSV intentando inferir separador si hace falta.
-    """
     try:
         df = pd.read_csv(path)
         if df.shape[1] == 1 and ";" in str(df.columns[0]):
@@ -151,7 +143,7 @@ def load_all_data():
                 df = standardize_columns(df)  # densidad/baja/media/alta
                 vd_curves[p_type][key] = df
 
-    # CDV (corrección) - archivos específicos para evitar colisiones con vd_*.csv
+    # CDV (corrección)
     cflex_path = find_file_best("correccion_flexible")
     crig_path  = find_file_best("correccion_rigido")
 
@@ -200,7 +192,7 @@ def get_dv(p_type: str, key: str, sev: str, density: float) -> float:
 def get_cdv(p_type: str, q: int, tdv: float) -> float:
     df = CDV_FLEX if p_type == "FLEXIBLE" else CDV_RIG
 
-    # Regla ASTM/tu MATLAB: si q <= 1 => CDV = TDV
+    # Regla ASTM/MATLAB: si q <= 1 => CDV = TDV
     if df is None or q <= 1:
         return float(tdv)
 
@@ -236,10 +228,10 @@ def get_cdv(p_type: str, q: int, tdv: float) -> float:
 
 def baches_qty_equiv(largo_m: float, area_m2: float) -> float:
     """
-    Replica EXACTO la regla de tu MATLAB para baches:
-      - si largo > 0.75 m => qty = area/0.45 (huecos equivalentes)
-      - si no => qty = 1 (un hueco)
-    Aquí, por seguridad, si no se ingresó nada (largo=0 y area=0), qty=0.
+    Regla MATLAB:
+      - si largo > 0.75 m => qty = area/0.45
+      - si no => qty = 1
+    Si no hay datos (largo=0 y area=0), qty=0.
     """
     largo_m = float(largo_m or 0.0)
     area_m2 = float(area_m2 or 0.0)
@@ -251,6 +243,10 @@ def baches_qty_equiv(largo_m: float, area_m2: float) -> float:
         return max(0.0, area_m2) / P["HUECO_AREA_EQ"]
 
     return 1.0
+
+def losas_totales(area_total_m2: float) -> int:
+    # MATLAB: losasTot = ceil(areaU / 18)
+    return int(math.ceil(float(area_total_m2) / float(P["LOSA_AREA_M2"])))
 
 # ------------------------------------------------------------
 # UI
@@ -280,7 +276,7 @@ with st.sidebar:
 col_in, col_out = st.columns([1, 1.5])
 
 # ------------------------------------------------------------
-# INPUT PANEL (FIX: selectbox fuera del form)
+# INPUT PANEL
 # ------------------------------------------------------------
 with col_in:
     st.subheader("📝 Nuevo Deterioro (evento manual)")
@@ -302,9 +298,10 @@ with col_in:
         cant = 0.0
         largo_bache = 0.0
         area_bache_m2 = 0.0
+        area_dano_m2_rig = 0.0
 
         if pav_type == "FLEXIBLE" and str(tipo).strip().lower() == "baches":
-            st.caption("Regla baches: si largo > 0.75 m ⇒ huecos_equiv = area/0.45; si no ⇒ 1 hueco.")
+            st.caption("Baches: si largo > 0.75 m ⇒ huecos_equiv = area/0.45; si no ⇒ 1 hueco.")
             largo_bache = st.number_input(
                 "Largo del bache (m)",
                 min_value=0.0,
@@ -319,6 +316,17 @@ with col_in:
                 value=0.0,
                 key="area_bache_in",
             )
+
+        elif pav_type == "RIGIDO":
+            st.caption("Rígido (MATLAB): se ingresa área dañada (m²) y se convierte a losas equivalentes (área/18).")
+            area_dano_m2_rig = st.number_input(
+                "Área del daño (m²)",
+                min_value=0.0,
+                step=0.01,
+                value=0.0,
+                key="area_dano_rig_in",
+            )
+
         else:
             cant = st.number_input(
                 "Cantidad",
@@ -335,6 +343,7 @@ with col_in:
                     "Cantidad": float(cant),
                     "Largo_m": float(largo_bache),
                     "Area_m2": float(area_bache_m2),
+                    "Area_rig_m2": float(area_dano_m2_rig),
                     "Pav": pav_type
                 })
                 st.rerun()
@@ -346,97 +355,138 @@ with col_out:
     st.subheader("📊 Resultados")
 
     if st.session_state.list_danos:
-        dvs_finales: list[float] = []
-        densidades: list[float] = []
-
+        # Filtra por tipo de pavimento actual
         danos_filtrados = [d for d in st.session_state.list_danos if d["Pav"] == pav_type]
 
-        # 1) DV por evento manual (reglas de densidad alineadas con tu MATLAB en baches)
-        for d in danos_filtrados:
-            if pav_type == "FLEXIBLE":
-                # --- BACHES: convertir a huecos equivalentes (area/0.45) o 1 hueco
-                if d["Deterioro"] == "baches":
-                    qty_equiv = baches_qty_equiv(d.get("Largo_m", 0.0), d.get("Area_m2", 0.0))
-                    dens = (qty_equiv / area_total) * 100.0
-
-                # --- RESTO (mantienes tu entrada manual como cantidad directa)
-                else:
-                    dens = (float(d["Cantidad"]) / area_total) * 100.0
-                    if d["Deterioro"] in ["ahuellamiento", "abultamientos_hundimientos"]:
-                        dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
-
-            else:
-                # RÍGIDO: cantidad contra losas equivalentes
-                dens = (float(d["Cantidad"]) / (area_total / P["LOSA_AREA_M2"])) * 100.0
-
-            densidades.append(float(dens))
-            val_dv = get_dv(pav_type, d["Deterioro"], d["Severidad"], float(dens))
-            dvs_finales.append(float(val_dv))
-
-        # 2) ASTM: HDV -> m -> iteración CDV
-        current_vals = sorted([v for v in dvs_finales if v > 0], reverse=True)
-
-        if not current_vals:
-            st.warning("Todos los DV resultaron 0. Verifica archivos VD y rangos.")
+        if not danos_filtrados:
+            st.info("No hay eventos para este tipo de pavimento.")
         else:
-            hdv = current_vals[0]
+            # -------------------------
+            # 1) Construir tabla "tipo MATLAB": cantidad_equiv por evento
+            # -------------------------
+            rows = []
+            for d in danos_filtrados:
+                det = str(d["Deterioro"])
+                sev_i = str(d["Severidad"])
 
-            # m acotado como en tu MATLAB
-            m = 1 + (9 / 98) * (100 - hdv)
-            m = min(max(m, 1.0), 10.0)
+                if pav_type == "FLEXIBLE":
+                    if det == "baches":
+                        qty_equiv = baches_qty_equiv(d.get("Largo_m", 0.0), d.get("Area_m2", 0.0))
+                        dens = (qty_equiv / float(area_total)) * 100.0
+                    else:
+                        qty_equiv = float(d.get("Cantidad", 0.0) or 0.0)
+                        dens = (qty_equiv / float(area_total)) * 100.0
+                        if det in ["ahuellamiento", "abultamientos_hundimientos"]:
+                            dens = min(dens, P["CAP_DENS_AHUELL_PCT"])
 
-            vals_iter = current_vals[: int(np.ceil(m))]
-            max_cdv = 0.0
+                else:
+                    # RÍGIDO (MATLAB): qty_equiv = area_dano_m2 / 18; dens = 100 * qty / ceil(area/18)
+                    area_dano_m2 = float(d.get("Area_rig_m2", 0.0) or 0.0)
+                    qty_equiv = max(0.0, area_dano_m2) / float(P["LOSA_AREA_M2"])
+                    lt = losas_totales(area_total)
+                    dens = 0.0 if lt <= 0 else (qty_equiv / float(lt)) * 100.0
 
-            while True:
-                q = sum(1 for v in vals_iter if v > 2.0)
-                tdv = float(np.sum(vals_iter))
-                cdv = get_cdv(pav_type, q, tdv)
-                max_cdv = max(max_cdv, cdv)
+                rows.append({
+                    "Deterioro": det,
+                    "Severidad": sev_i,
+                    "Cantidad": float(d.get("Cantidad", 0.0) or 0.0),
+                    "Cantidad_equiv": float(qty_equiv),
+                    "Densidad_%_evento": float(dens),
+                })
 
-                if q <= 1:
-                    break
+            df_evt = pd.DataFrame(rows)
 
-                # bajar a 2.0 el MENOR DV>2 (igual a MATLAB)
-                idx_gt2 = [i for i, v in enumerate(vals_iter) if v > 2.0]
-                if not idx_gt2:
-                    break
-                i_min = min(idx_gt2, key=lambda i: vals_iter[i])
-                vals_iter[i_min] = 2.0
-
-            pci = max(0.0, 100.0 - max_cdv)
-
-            # 3) Mostrar
-            c1, c2 = st.columns(2)
-            c1.metric("PCI", f"{round(pci, 1)}")
-
-            rating = (
-                "BUENO" if pci > 85 else
-                "SATISFACTORIO" if pci > 70 else
-                "REGULAR" if pci > 55 else
-                "MALO" if pci > 40 else
-                "MUY MALO" if pci > 25 else
-                "CRITICO" if pci > 10 else
-                "FALLADO"
+            # -------------------------
+            # 2) Agrupar por Deterioro + Severidad (MATLAB: construir_tabla_reporte)
+            # -------------------------
+            grp = (
+                df_evt
+                .groupby(["Deterioro", "Severidad"], as_index=False)
+                .agg({"Cantidad_equiv": "sum"})
             )
-            c2.metric("Condición", rating)
 
-            st.markdown("---")
-            df_mostrar = pd.DataFrame(danos_filtrados)
+            # Recalcular densidad por grupo con reglas de pavimento
+            dens_list = []
+            dv_list = []
+            for _, r in grp.iterrows():
+                det = r["Deterioro"]
+                sev_i = r["Severidad"]
+                qty = float(r["Cantidad_equiv"] or 0.0)
 
-            # Columna opcional: cantidad equivalente (para auditar baches)
-            def _qty_equiv_row(row: pd.Series) -> float:
-                if pav_type == "FLEXIBLE" and str(row.get("Deterioro", "")) == "baches":
-                    return baches_qty_equiv(row.get("Largo_m", 0.0), row.get("Area_m2", 0.0))
-                return float(row.get("Cantidad", 0.0) or 0.0)
+                if pav_type == "FLEXIBLE":
+                    dens_g = 0.0 if area_total <= 0 else (qty / float(area_total)) * 100.0
+                    if det in ["ahuellamiento", "abultamientos_hundimientos"]:
+                        dens_g = min(dens_g, P["CAP_DENS_AHUELL_PCT"])
+                else:
+                    lt = losas_totales(area_total)
+                    dens_g = 0.0 if lt <= 0 else (qty / float(lt)) * 100.0
 
-            df_mostrar["Cantidad_equiv"] = df_mostrar.apply(_qty_equiv_row, axis=1)
-            df_mostrar["Densidad_%"] = [round(x, 3) for x in densidades]
-            df_mostrar["Deducido"] = [round(v, 2) for v in dvs_finales]
+                dens_list.append(float(dens_g))
+                dv_list.append(float(get_dv(pav_type, det, sev_i, float(dens_g))))
 
-            # Tabla final
-            cols_show = ["Deterioro", "Severidad", "Cantidad", "Cantidad_equiv", "Densidad_%", "Deducido"]
-            st.table(df_mostrar[cols_show])
+            grp["Densidad_%"] = np.round(dens_list, 3)
+            grp["Deducido_DV"] = np.round(dv_list, 2)
+
+            # -------------------------
+            # 3) ASTM: HDV -> m -> iteración CDV (con DVs agrupados)
+            # -------------------------
+            dvs_finales = sorted([float(v) for v in grp["Deducido_DV"].values if v and v > 0], reverse=True)
+
+            if not dvs_finales:
+                st.warning("Todos los DV resultaron 0. Verifica VD/curvas y rangos de densidad.")
+            else:
+                hdv = dvs_finales[0]
+
+                m = 1 + (9 / 98) * (100 - hdv)
+                m = min(max(m, 1.0), 10.0)
+
+                vals_iter = dvs_finales[: int(np.ceil(m))]
+                max_cdv = 0.0
+
+                while True:
+                    q = sum(1 for v in vals_iter if v > 2.0)
+                    tdv = float(np.sum(vals_iter))
+                    cdv = get_cdv(pav_type, q, tdv)
+                    max_cdv = max(max_cdv, cdv)
+
+                    if q <= 1:
+                        break
+
+                    idx_gt2 = [i for i, v in enumerate(vals_iter) if v > 2.0]
+                    if not idx_gt2:
+                        break
+                    i_min = min(idx_gt2, key=lambda i: vals_iter[i])
+                    vals_iter[i_min] = 2.0
+
+                pci = max(0.0, 100.0 - max_cdv)
+
+                # -------------------------
+                # 4) Mostrar
+                # -------------------------
+                c1, c2 = st.columns(2)
+                c1.metric("PCI", f"{round(pci, 1)}")
+
+                rating = (
+                    "BUENO" if pci > 85 else
+                    "SATISFACTORIO" if pci > 70 else
+                    "REGULAR" if pci > 55 else
+                    "MALO" if pci > 40 else
+                    "MUY MALO" if pci > 25 else
+                    "CRITICO" if pci > 10 else
+                    "FALLADO"
+                )
+                c2.metric("Condición", rating)
+
+                st.markdown("---")
+
+                if pav_type == "RIGIDO":
+                    st.caption(f"Rígido: losas totales (ceil(Área/18)) = {losas_totales(area_total)}")
+
+                st.subheader("Tabla agrupada (equivalente al reporte MATLAB)")
+                st.table(grp[["Deterioro", "Severidad", "Cantidad_equiv", "Densidad_%", "Deducido_DV"]])
+
+                st.subheader("Eventos ingresados (auditoría)")
+                st.table(df_evt)
 
     else:
         st.info("Agregue deterioros para ver el cálculo.")
