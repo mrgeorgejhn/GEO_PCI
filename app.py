@@ -9,7 +9,7 @@ from scipy.interpolate import interp1d
 # CONFIG
 # ------------------------------------------------------------
 st.set_page_config(
-    page_title="GEO_PCI - Análisis de Pavimentos",
+    page_title="GEODAJ PCI - Análisis de Pavimentos (By AMRR&JHNL)",
     layout="wide",
     page_icon="🚜"
 )
@@ -28,6 +28,14 @@ DATA_DIR = "data"
 # ------------------------------------------------------------
 if "list_danos" not in st.session_state:
     st.session_state.list_danos = []
+
+# ID incremental para identificar eventos y poder eliminarlos sin ambigüedad
+if "next_dano_id" not in st.session_state:
+    st.session_state.next_dano_id = 1
+
+# Pila simple para deshacer eliminaciones (último eliminado primero)
+if "undo_stack" not in st.session_state:
+    st.session_state.undo_stack = []
 
 # ------------------------------------------------------------
 # HELPERS: FILE SEARCH + DATA CLEANING
@@ -260,6 +268,8 @@ with st.sidebar:
 
     if st.button("🗑️ Reiniciar Todo"):
         st.session_state.list_danos = []
+        st.session_state.undo_stack = []
+        st.session_state.next_dano_id = 1
         st.rerun()
 
     if st.checkbox("Debug (CDV/VD)"):
@@ -318,7 +328,7 @@ with col_in:
             )
 
         elif pav_type == "RIGIDO":
-            st.caption("Rígido (MATLAB): se ingresa área dañada (m²) y se convierte a losas equivalentes (área/18).")
+            st.caption("Rígido: se ingresa área dañada (m²) y se convierte a losas equivalentes (área/18).")
             area_dano_m2_rig = st.number_input(
                 "Área del daño (m²)",
                 min_value=0.0,
@@ -338,6 +348,7 @@ with col_in:
         if st.form_submit_button("Añadir a la lista"):
             if opciones and "Error: Datos no encontrados" not in opciones:
                 st.session_state.list_danos.append({
+                    "id": int(st.session_state.next_dano_id),
                     "Deterioro": tipo,
                     "Severidad": sev,
                     "Cantidad": float(cant),
@@ -346,6 +357,7 @@ with col_in:
                     "Area_rig_m2": float(area_dano_m2_rig),
                     "Pav": pav_type
                 })
+                st.session_state.next_dano_id += 1
                 st.rerun()
 
 # ------------------------------------------------------------
@@ -353,6 +365,60 @@ with col_in:
 # ------------------------------------------------------------
 with col_out:
     st.subheader("📊 Resultados")
+
+    # ------------------------------------------------------------
+    # CONTROLES DE EDICIÓN (Eliminar / Deshacer)
+    # ------------------------------------------------------------
+    if st.session_state.list_danos:
+        cdel1, cdel2, cdel3 = st.columns([1, 1, 2])
+
+        # Eliminar último (del tipo de pavimento actual)
+        if cdel1.button("🧹 Eliminar último (este pavimento)"):
+            idx = next(
+                (i for i in range(len(st.session_state.list_danos) - 1, -1, -1)
+                 if st.session_state.list_danos[i].get("Pav") == pav_type),
+                None
+            )
+            if idx is not None:
+                removed = st.session_state.list_danos.pop(idx)
+                st.session_state.undo_stack.append(removed)
+                st.rerun()
+            else:
+                st.info("No hay eventos para este tipo de pavimento.")
+
+        # Deshacer última eliminación
+        if cdel2.button("↩️ Deshacer"):
+            if st.session_state.undo_stack:
+                restored = st.session_state.undo_stack.pop()
+                st.session_state.list_danos.append(restored)
+                st.rerun()
+            else:
+                st.info("Nada para deshacer.")
+
+        # Eliminar por ID (solo IDs del pavimento actual)
+        ids_disp = [
+            d.get("id") for d in st.session_state.list_danos
+            if d.get("Pav") == pav_type and d.get("id") is not None
+        ]
+        ids_disp = [int(x) for x in ids_disp if pd.notna(x)]
+
+        id_sel = cdel3.selectbox(
+            "Eliminar evento por ID (este pavimento)",
+            options=[None] + sorted(ids_disp),
+            format_func=lambda x: "—" if x is None else f"ID {x}",
+            key=f"del_id_{pav_type}",
+        )
+        if cdel3.button("🗑️ Eliminar seleccionado"):
+            if id_sel is not None:
+                idx = next(
+                    (i for i, d in enumerate(st.session_state.list_danos)
+                     if d.get("id") == id_sel and d.get("Pav") == pav_type),
+                    None
+                )
+                if idx is not None:
+                    removed = st.session_state.list_danos.pop(idx)
+                    st.session_state.undo_stack.append(removed)
+                    st.rerun()
 
     if st.session_state.list_danos:
         # Filtra por tipo de pavimento actual
@@ -387,6 +453,7 @@ with col_out:
                     dens = 0.0 if lt <= 0 else (qty_equiv / float(lt)) * 100.0
 
                 rows.append({
+                    "id": int(d.get("id", -1)),
                     "Deterioro": det,
                     "Severidad": sev_i,
                     "Cantidad": float(d.get("Cantidad", 0.0) or 0.0),
@@ -486,7 +553,7 @@ with col_out:
                 st.table(grp[["Deterioro", "Severidad", "Cantidad_equiv", "Densidad_%", "Deducido_DV"]])
 
                 st.subheader("Eventos ingresados (auditoría)")
-                st.table(df_evt)
+                st.table(df_evt[["id", "Deterioro", "Severidad", "Cantidad", "Cantidad_equiv", "Densidad_%_evento"]])
 
     else:
         st.info("Agregue deterioros para ver el cálculo.")
