@@ -9,7 +9,7 @@ from scipy.interpolate import interp1d
 # CONFIG
 # ------------------------------------------------------------
 st.set_page_config(
-    page_title="GEODAJ PCI - Análisis de Pavimentos (By AMRR&JHNL)",
+    page_title="GeoDAJ PCI",
     layout="wide",
     page_icon="🚜"
 )
@@ -259,7 +259,7 @@ def losas_totales(area_total_m2: float) -> int:
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
-st.title("🚜 GEO_PCI - Sistema de Evaluación (Manual)")
+st.title("🚜 GEODAJ PCI - Análisis de Pavimentos Manual (By AMRR&JHNL)")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -550,7 +550,7 @@ with col_out:
                 if pav_type == "RIGIDO":
                     st.caption(f"Rígido: losas totales (ceil(Área/18)) = {losas_totales(area_total)}")
 
-                st.subheader("Tabla agrupada (equivalente al reporte MATLAB)")
+                st.subheader("Tabla agrupada")
                 st.table(grp[["Deterioro", "Severidad", "Cantidad_equiv", "Densidad_%", "Deducido_DV"]])
 
                 st.subheader("Eventos ingresados (auditoría)")
