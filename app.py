@@ -153,10 +153,10 @@ def load_all_data():
 
     # CDV (corrección)
     cflex_path = find_file_best("correccion_flexible")
-    crig_path  = find_file_best("correccion_rigido")
+    crig_path = find_file_best("correccion_rigido")
 
     c_flex = read_csv_robust(cflex_path) if cflex_path else None
-    c_rig  = read_csv_robust(crig_path)  if crig_path else None
+    c_rig = read_csv_robust(crig_path) if crig_path else None
 
     if c_flex is not None:
         c_flex = standardize_columns(c_flex)
@@ -457,6 +457,7 @@ with col_out:
                     "Deterioro": det,
                     "Severidad": sev_i,
                     "Cantidad": float(d.get("Cantidad", 0.0) or 0.0),
+                    "Area_rig_m2": float(d.get("Area_rig_m2", 0.0) or 0.0),
                     "Cantidad_equiv": float(qty_equiv),
                     "Densidad_%_evento": float(dens),
                 })
@@ -553,7 +554,10 @@ with col_out:
                 st.table(grp[["Deterioro", "Severidad", "Cantidad_equiv", "Densidad_%", "Deducido_DV"]])
 
                 st.subheader("Eventos ingresados (auditoría)")
-                st.table(df_evt[["id", "Deterioro", "Severidad", "Cantidad", "Cantidad_equiv", "Densidad_%_evento"]])
+                if pav_type == "RIGIDO":
+                    st.table(df_evt[["id", "Deterioro", "Severidad", "Area_rig_m2", "Cantidad_equiv", "Densidad_%_evento"]])
+                else:
+                    st.table(df_evt[["id", "Deterioro", "Severidad", "Cantidad", "Cantidad_equiv", "Densidad_%_evento"]])
 
     else:
         st.info("Agregue deterioros para ver el cálculo.")
