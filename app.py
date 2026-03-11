@@ -259,7 +259,7 @@ def losas_totales(area_total_m2: float) -> int:
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
-st.title("🚜 GEODAJ PCI - Análisis de Pavimentos Manual (By AMRR&JHNL)")
+st.title("🚜 GeoDAJ PCI - Análisis de Pavimentos Manual (By AMRR&JHNL)")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
